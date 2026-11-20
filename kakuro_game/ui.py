@@ -4,11 +4,12 @@ from collections import Counter
 import tkinter as tk
 from tkinter import ttk
 
-from model import Domains, Puzzle
+from model import Puzzle
 from puzzles import PUZZLES
 from solver import KakuroSolver, Step
 
-CELL_SIZE = 56
+BOARD_SIZE = 576
+MAX_CELL_SIZE = 96
 HIGHLIGHT = {
     "propagate": "#bde4ff",
     "guess": "#ffe5a1",
@@ -42,9 +43,12 @@ class KakuroUI:
         body = ttk.Frame(root)
         body.grid(row=1, column=0, sticky="nsew")
         body.rowconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
-        self.board = tk.Canvas(body, highlightthickness=0)
-        self.board.grid(row=0, column=0, sticky="nw", padx=(0, 12))
+        body.columnconfigure(0, weight=1)
+        self.board = tk.Canvas(
+            body, width=BOARD_SIZE, height=BOARD_SIZE, highlightthickness=0,
+            background=root.cget("background"),
+        )
+        self.board.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 
         history_frame = ttk.Frame(body)
         history_frame.grid(row=0, column=1, sticky="nsew")
@@ -61,6 +65,7 @@ class KakuroUI:
 
         self.timer: str | None = None
         self.reset()
+        self.board.bind("<Configure>", lambda _event: self.draw())
 
     @property
     def puzzle(self) -> Puzzle:
@@ -76,7 +81,9 @@ class KakuroUI:
         self.history.delete("1.0", "end")
         self.history.configure(state="disabled")
         self.update_status()
-        self.draw(self.puzzle.initial_domains())
+        self.domains = self.puzzle.initial_domains()
+        self.current_step: Step | None = None
+        self.draw()
 
     def update_status(self) -> None:
         self.status.configure(text=(
@@ -84,13 +91,97 @@ class KakuroUI:
             f"Thử {self.counts['guess']}   |   Quay lui {self.counts['backtrack']}"
         ))
 
-    def draw(self, domains: Domains, step: Step | None = None) -> None:
+    def draw(self) -> None:
         self.board.delete("all")
-        self.board.configure(
-            width=self.puzzle.width * CELL_SIZE + 1,
-            height=self.puzzle.height * CELL_SIZE + 1,
-        )
+        width = self.board.winfo_width()
+        height = self.board.winfo_height()
+        cell_size = min(MAX_CELL_SIZE, (width - 2) // self.puzzle.width,
+                        (height - 2) // self.puzzle.height)
+        if cell_size < 1:
+            return
+        x_start = (width - self.puzzle.width * cell_size) // 2
+        y_start = (height - self.puzzle.height * cell_size) // 2
+        small_font = ("TkDefaultFont", -max(1, round(cell_size * 0.22)))
+        large_font = ("TkDefaultFont", -max(1, round(cell_size * 0.47)), "bold")
+        step = self.current_step
         marked = set(step.cells) if step else set()
         for row, tokens in enumerate(self.puzzle.grid, 1):
             for column, token in enumerate(tokens, 1):
-                x, y = (column - 1) * CELL_SIZE + 1, (row - 1) * CELL_SIZE + 1
+                x = x_start + (column - 1) * cell_size
+                y = y_start + (row - 1) * cell_size
+                cell = row, column
+                if token == ".":
+                    color = HIGHLIGHT[step.kind] if cell in marked and step else "white"
+                    self.board.create_rectangle(x, y, x + cell_size, y + cell_size, fill=color)
+                    domain = self.domains[cell]
+                    if len(domain) == 1:
+                        self.board.create_text(
+                            x + cell_size / 2, y + cell_size / 2,
+                            text=str(next(iter(domain))), font=large_font,
+                        )
+                    else:
+                        for value in sorted(domain):
+                            r, c = divmod(value - 1, 3)
+                            self.board.create_text(
+                                x + (c + 0.5) * cell_size / 3,
+                                y + (r + 0.5) * cell_size / 3,
+                                text=str(value), fill="#344e68", font=small_font,
+                            )
+                    continue
+
+                self.board.create_rectangle(x, y, x + cell_size, y + cell_size, fill="#34465b")
+                self.board.create_line(x, y, x + cell_size, y + cell_size, fill="#aebdcb")
+                if token != "#":
+                    down, across = token.split("/")
+                    if across != "0":
+                        self.board.create_text(x + cell_size * 0.73, y + cell_size * 0.27,
+                                               text=across, fill="white", font=small_font)
+                    if down != "0":
+                        self.board.create_text(x + cell_size * 0.27, y + cell_size * 0.73,
+                                               text=down, fill="white", font=small_font)
+
+    def advance(self) -> bool:
+        step = next(self.steps, None)
+        if step is None:
+            return False
+        self.counts[step.kind] += 1
+        self.domains = step.domains
+        self.current_step = step
+        self.draw()
+        self.update_status()
+        self.history.configure(state="normal")
+        self.history.insert("end", f"{sum(self.counts.values())}. {step.message}\n")
+        self.history.see("end")
+        self.history.configure(state="disabled")
+        if step.kind in {"solved", "unsolved"}:
+            self.pause()
+            self.next_button.state(["disabled"])
+            self.play_button.state(["disabled"])
+            return False
+        return True
+
+    def pause(self) -> None:
+        if self.timer is not None:
+            self.root.after_cancel(self.timer)
+            self.timer = None
+        self.play_button.configure(text="Tự chạy")
+        self.next_button.state(["!disabled"])
+
+    def toggle_play(self) -> None:
+        if self.timer is not None:
+            self.pause()
+            return
+        self.play_button.configure(text="Tạm dừng")
+        self.next_button.state(["disabled"])
+        self.tick()
+
+    def tick(self) -> None:
+        self.timer = None
+        if self.advance():
+            self.timer = self.root.after(200, self.tick)
+
+
+def launch() -> None:
+    root = tk.Tk()
+    KakuroUI(root)
+    root.mainloop()
