@@ -1,6 +1,7 @@
 """Tkinter board and step-by-step playback of the Kakuro solver."""
 
 from collections import Counter
+from dataclasses import replace
 import tkinter as tk
 from tkinter import ttk
 
@@ -144,13 +145,27 @@ class KakuroUI:
         step = next(self.steps, None)
         if step is None:
             return False
+        restored = []
+        if step.kind == "backtrack":
+            for cell in self.puzzle.cells:
+                before = self.domains[cell]
+                after = step.domains[cell]
+                if before < after:
+                    restored.append(cell)
+            step = replace(step, cells=tuple(restored))
+        message = step.message
+        if restored:
+            cell = restored[0]
+            before = ", ".join(map(str, sorted(self.domains[cell])))
+            after = ", ".join(map(str, sorted(step.domains[cell])))
+            message += f"\nÔ {cell}: {{{before}}} → {{{after}}}"
         self.counts[step.kind] += 1
         self.domains = step.domains
         self.current_step = step
         self.draw()
         self.update_status()
         self.history.configure(state="normal")
-        self.history.insert("end", f"{sum(self.counts.values())}. {step.message}\n")
+        self.history.insert("end", f"{sum(self.counts.values())}. {message}\n")
         self.history.see("end")
         self.history.configure(state="disabled")
         if step.kind in {"solved", "unsolved"}:
